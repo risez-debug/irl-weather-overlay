@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRL Weather Overlay</title>
+<style>
+  :root {
+    --text: #ffffff;
+    --muted: rgba(255,255,255,.82);
+    --panel: rgba(10, 14, 20, .58);
+    --accent: #75e0b5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    color: var(--text);
+  }
+  body { display: flex; align-items: flex-start; justify-content: flex-start; padding: 12px; }
+  .overlay {
+    display: inline-flex; align-items: center; gap: 12px;
+    max-width: calc(100vw - 24px);
+    padding: 10px 15px;
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 16px;
+    background: var(--panel);
+    box-shadow: 0 5px 20px rgba(0,0,0,.18);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    text-shadow: 0 1px 3px rgba(0,0,0,.55);
+  }
+  .icon { font-size: 34px; line-height: 1; width: 40px; text-align: center; }
+  .details { min-width: 0; }
+  .place { font-size: 17px; line-height: 1.2; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .summary { margin-top: 3px; display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 12px; }
+  .temp { font-size: 21px; font-weight: 800; color: var(--accent); line-height: 1; }
+  .status { font-size: 11px; color: var(--muted); margin-top: 5px; }
+  .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); margin-right:5px; vertical-align:middle; }
+  .error { color: #ffd2a8; }
+  @media (max-width: 300px) {
+    .overlay { gap: 7px; padding: 8px 10px; border-radius: 12px; }
+    .icon { font-size: 27px; width: 30px; }
+    .place { font-size: 14px; }
+    .temp { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+  <main class="overlay" role="status" aria-live="polite">
+    <div class="icon" id="icon">🌤️</div>
+    <div class="details">
+      <div class="place" id="place">Haetaan sijaintia…</div>
+      <div class="summary"><span class="temp" id="temp">--°C</span><span id="description">Haetaan säätä</span></div>
+      <div class="status" id="status"><span class="dot"></span>GPS-sijainti</div>
+    </div>
+  </main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const refreshMinutes = Math.max(5, Number(params.get('refresh') || 10));
+  let lastCoords = null;
+
+  const weatherText = code => {
+    if (code === 0) return ['☀️', 'Selkeää'];
+    if (code === 1) return ['🌤️', 'Enimmäkseen selkeää'];
+    if (code === 2) return ['⛅', 'Puolipilvistä'];
+    if (code === 3) return ['☁️', 'Pilvistä'];
+    if ([45,48].includes(code)) return ['🌫️', 'Sumua'];
+    if ([51,53,55,56,57].includes(code)) return ['🌦️', ' tihkusadetta'];
+    if ([61,63,65,66,67,80,81,82].includes(code)) return ['🌧️', 'Sadetta'];
+    if ([71,73,75,77,85,86].includes(code)) return ['🌨️', 'Lumisadetta'];
+    if ([95,96,99].includes(code)) return ['⛈️', 'Ukkosta'];
+    return ['🌡️', 'Sää nyt'];
+  };
+
+  async function getPlace(lat, lon) {
+    try {
+      const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=fi`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('geocode');
+      const d = await r.json();
+      return d.city || d.locality || d.localityInfo?.administrative?.[0]?.name ||
+             d.principalSubdivision || 'Nykyinen sijainti';
+    } catch {
+      return 'Nykyinen sijainti';
+    }
+  }
+
+  async function getWeather(lat, lon) {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=auto`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('weather');
+    return r.json();
+  }
+
+  async function updateAt(lat, lon) {
+    lastCoords = {lat, lon};
+    try {
+      const [place, weather] = await Promise.all([
+        getPlace(lat, lon),
+        getWeather(lat, lon)
+      ]);
+      const current = weather.current;
+      const [icon, desc] = weatherText(Number(current.weather_code));
+      $('place').textContent = place;
+      $('icon').textContent = icon;
+      $('temp').textContent = `${Math.round(Number(current.temperature_2m))}°C`;
+      $('description').textContent = desc.trim();
+      $('status').innerHTML = '<span class="dot"></span>Päivitetty ' +
+        new Intl.DateTimeFormat('fi-FI', {hour:'2-digit', minute:'2-digit', timeZone: weather.timezone}).format(new Date());
+      $('status').classList.remove('error');
+    } catch {
+      $('status').textContent = 'Säätietojen haku epäonnistui';
+      $('status').classList.add('error');
+    }
+  }
+
+  function locate() {
+    if (!('geolocation' in navigator)) {
+      $('place').textContent = 'GPS ei ole käytettävissä';
+      $('status').textContent = 'Avaa overlay HTTPS-osoitteesta';
+      $('status').classList.add('error');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => updateAt(pos.coords.latitude, pos.coords.longitude),
+      () => {
+        $('place').textContent = 'Sijaintilupa tarvitaan';
+        $('status').textContent = 'Salli sijainnin käyttö overlaylle';
+        $('status').classList.add('error');
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 120000 }
+    );
+  }
+
+  locate();
+  if ('geolocation' in navigator) {
+    navigator.geolocation.watchPosition(
+      pos => {
+        if (!lastCoords || Math.abs(pos.coords.latitude-lastCoords.lat) > 0.015 ||
+            Math.abs(pos.coords.longitude-lastCoords.lon) > 0.015) {
+          updateAt(pos.coords.latitude, pos.coords.longitude);
+        }
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 120000, timeout: 20000 }
+    );
+  }
+  setInterval(() => {
+    if (lastCoords) updateAt(lastCoords.lat, lastCoords.lon);
+    else locate();
+  }, refreshMinutes * 60 * 1000);
+})();
+</script>
+</body>
+</html>
